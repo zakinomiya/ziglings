@@ -3,12 +3,21 @@ const std = @import("std");
 pub const Command = struct {
     long_name: []const u8,
     commands: ?[]Command = null,
+
+    pub fn deinit(self: Command, allocator: std.mem.Allocator) void {
+        if (self.commands) |cmds| {
+            for (cmds) |cmd| {
+                cmd.deinit(allocator);
+            }
+            allocator.free(cmds);
+        }
+    }
 };
 
 pub const Parser = struct {
     iter: Iterator,
-
-    var cur_command: ?*Command = null;
+    root_command: *Command,
+    cur_command: *Command,
 
     const Iterator = struct {
         args: [][:0]u8,
@@ -39,33 +48,42 @@ pub const Parser = struct {
 
     pub fn init(
         args: [][:0]u8,
+        commands: []const Command,
+        allocator: std.mem.Allocator,
     ) Parser {
-        var c1 = Command{ .long_name = "test" };
-        var c2 = Command{ .long_name = "test2" };
-        var c = Command{ .long_name = "hello", .commands = &[_]Command{ c1, c2 } };
-        cur_command = &c;
+        const cmds = allocator.alloc(Command, commands.len) catch unreachable;
+        for (commands) |c, i| {
+            cmds[i] = c;
+        }
+
+        const c = allocator.create(Command) catch unreachable;
+        c.* = Command{ .long_name = "hello", .commands = cmds };
         var iter = Iterator.init(args);
         return Parser{
             .iter = iter,
+            .root_command = c,
+            .cur_command = c,
         };
     }
 
-    // run `zig test main.zig`
-    // ERROR: the value which `cur_command` points to breaks by just using the value (like printing the value).
-    //        Also in some cases, std.debug.print will panic with very very long error message
+    pub fn deinit(self: Parser, allocator: std.mem.Allocator) void {
+        self.root_command.deinit(allocator);
+        allocator.destroy(self.root_command);
+    }
+
     pub fn parse(self: *Parser) !void {
-        std.debug.print("cur_command: {s}\n", .{cur_command.?.long_name});
+        std.debug.print("cur_command: {s}\n", .{self.cur_command.long_name});
         const a = self.iter.next();
         std.debug.print("a: {s}\n", .{a.?});
-        std.debug.print("cur_command: {s}\n", .{cur_command.?.long_name});
+        std.debug.print("cur_command: {s}\n", .{self.cur_command.long_name});
         // @1 running the next line will print broken cur_command
-        // std.debug.print("cur_command: {s}\n", .{cur_command.?.long_name});
+        std.debug.print("cur_command: {s}\n", .{self.cur_command.long_name});
         // @2 running the next two lines will panic (running with @1 won't panic but will print broken cur_command)
-        // const b = self.iter.next();
-        // std.debug.print("b: {s}\n", .{b.?});
-        // @3 running the next two lines with @1 and @2 will panic with very long text 
-        // std.debug.print("cur_command: {s}\n", .{cur_command.?.long_name});
-        // std.debug.print("cur_command: {s}\n", .{cur_command.?.long_name});
+        const b = self.iter.next();
+        std.debug.print("b: {s}\n", .{b.?});
+        // @3 running the next two lines with @1 and @2 will panic with very long text
+        std.debug.print("cur_command: {s}\n", .{self.cur_command.long_name});
+        std.debug.print("cur_command: {s}\n", .{self.cur_command.long_name});
     }
 };
 
@@ -97,11 +115,11 @@ const TestArgs = struct {
 };
 
 test "test" {
-    const args = try TestArgs.init(&[_][]const u8{ "test", "--verbose", "hello", "--user", "root", "foo" });
+    var args = try TestArgs.init(&[_][]const u8{ "test", "--verbose", "hello", "--user", "root", "foo" });
     defer std.testing.allocator.free(args.args);
     defer args.deinit();
-    var parser = Parser.init(args.args);
+    var parser = Parser.init(args.args, &[_]Command{ .{ .long_name = "test" }, .{ .long_name = "test2" } }, std.testing.allocator);
+    defer parser.deinit(std.testing.allocator);
 
     try parser.parse();
 }
-
